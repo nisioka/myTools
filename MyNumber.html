@@ -1,0 +1,23 @@
+<script>
+function check() {
+  var x, r, s, n, p, q;
+  x = document.getElementById("input").value;
+  if (x.length != 11) {
+    r = 'Error';
+  } else {
+    s = 0;
+    for (n = 1; n <= 11; n++) {
+      p = x[11-n];
+      q = (n <= 6) ? n+1 : n-5;
+      s += p * q;
+    }
+    s %= 11;
+    r = (s <= 1) ? 0 : 11 - s;
+  }
+  document.getElementById("output").value = r;
+}
+</script>
+
+<p><label>マイナンバーの先頭11桁：<input id="input" size="13" onchange="check()"></label></p>
+
+<p>マイナンバーの最後の桁（チェックディジット）：<input id="output" size="5" readonly></p>
