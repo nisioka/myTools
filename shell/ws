@@ -1,0 +1,220 @@
+#!/bin/bash
+# ws - Workspace Manager
+#
+# IDEのターミナルで ws add → tmuxセッション開始（セッション名=ディレクトリ名）
+# 別モニターで ws dash → 全セッションをミラーして一覧表示
+#
+# コマンド:
+#   ws add [name]   - カレントディレクトリ名でtmuxセッションを作成しattach（名前指定も可）
+#   ws rm [name]    - セッションを終了（名前省略=ディレクトリ名）
+#   ws list         - 一覧表示
+#   ws dash         - ダッシュボードを開く/更新
+#   ws help         - ヘルプ
+
+WS_PREFIX="ws-"
+
+_session_name() {
+    local name="${1//\./_}"
+    name="${name//:/_}"
+    echo "${WS_PREFIX}${name}"
+}
+
+_list_ws() {
+    tmux list-sessions -F '#S' 2>/dev/null | grep "^${WS_PREFIX}" | sed "s/^${WS_PREFIX}//"
+}
+
+_build_panes() {
+    # 新しいウィンドウにペインを構築する共通処理
+    # 引数: "new" (新規セッション作成) または "window" (既存セッションに新ウィンドウ追加)
+    local mode="$1"
+    shift
+    local sessions="$1"
+
+    local first=true
+    while read -r name; do
+        local sess="$(_session_name "$name")"
+        if $first; then
+            if [ "$mode" = "new" ]; then
+                tmux -L ws-dash new-session -d -s dash \
+                    "unset TMUX; tmux attach -t '=$sess'"
+            else
+                tmux -L ws-dash new-window -t dash \
+                    "unset TMUX; tmux attach -t '=$sess'"
+            fi
+            tmux -L ws-dash select-pane -T "$name"
+            first=false
+        else
+            tmux -L ws-dash split-window -t dash \
+                "unset TMUX; tmux attach -t '=$sess'"
+            tmux -L ws-dash select-pane -T "$name"
+            tmux -L ws-dash select-layout -t dash tiled
+        fi
+    done <<< "$sessions"
+
+    # ペイン数に応じてレイアウト選択（横並び優先）
+    local pane_count
+    pane_count=$(tmux -L ws-dash list-panes -t dash 2>/dev/null | wc -l)
+    if [ "$pane_count" -le 3 ]; then
+        tmux -L ws-dash select-layout -t dash even-horizontal
+    else
+        tmux -L ws-dash select-layout -t dash tiled
+    fi
+    tmux -L ws-dash set-option -t dash pane-border-status top 2>/dev/null
+    tmux -L ws-dash set-option -t dash pane-border-format ' #T ' 2>/dev/null
+}
+
+_rebuild_dash() {
+    local sessions
+    sessions=$(_list_ws)
+    local count=0
+    [ -n "$sessions" ] && count=$(echo "$sessions" | wc -l)
+
+    if [ "$count" -eq 0 ]; then
+        tmux -L ws-dash kill-session -t dash 2>/dev/null
+        echo "ワークスペースがありません"
+        return 1
+    fi
+
+    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
+        # ダッシュボードが開いている場合: 新ウィンドウを作って古いのを消す
+        local old_windows
+        old_windows=$(tmux -L ws-dash list-windows -t dash -F '#{window_id}')
+
+        _build_panes window "$sessions"
+
+        # 古いウィンドウを削除（クライアントは新ウィンドウに自動切替済み）
+        for wid in $old_windows; do
+            tmux -L ws-dash kill-window -t "$wid" 2>/dev/null
+        done
+    else
+        # ダッシュボードが無い場合: 新規作成
+        _build_panes new "$sessions"
+    fi
+}
+
+cmd_add() {
+    local name="${1:-$(basename "$PWD")}"
+    local sess="$(_session_name "$name")"
+
+    if tmux has-session -t "=$sess" 2>/dev/null; then
+        echo "⚠ '$name' は既に存在します。attachします"
+        exec tmux attach -t "=$sess"
+    fi
+
+    tmux new-session -d -s "$sess"
+
+    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
+        _rebuild_dash
+        echo "ダッシュボードを更新しました"
+    fi
+
+    exec tmux attach -t "=$sess"
+}
+
+cmd_rm() {
+    local name="${1:-$(basename "$PWD")}"
+    local sess="$(_session_name "$name")"
+
+    if ! tmux has-session -t "=$sess" 2>/dev/null; then
+        echo "⚠ '$name' は存在しません"
+        return 1
+    fi
+
+    local dash_updated=false
+
+    # dashが存在する場合、対応するペインを先に削除してレイアウト再適用
+    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
+        local pane_id
+        pane_id=$(tmux -L ws-dash list-panes -t dash -F '#{pane_id} #{pane_title}' 2>/dev/null \
+            | while read -r id title; do
+                if [ "$title" = "$name" ]; then
+                    echo "$id"
+                    break
+                fi
+            done)
+        if [ -n "$pane_id" ]; then
+            tmux -L ws-dash kill-pane -t "$pane_id" 2>/dev/null
+        fi
+
+        # dashセッションがまだ存在するならペイン数に応じてレイアウト再適用
+        if tmux -L ws-dash has-session -t dash 2>/dev/null; then
+            local pane_count
+            pane_count=$(tmux -L ws-dash list-panes -t dash 2>/dev/null | wc -l)
+            if [ "$pane_count" -le 3 ]; then
+                tmux -L ws-dash select-layout -t dash even-horizontal
+            else
+                tmux -L ws-dash select-layout -t dash tiled
+            fi
+            dash_updated=true
+        fi
+    fi
+
+    tmux kill-session -t "=$sess"
+    echo "✓ '$name' を終了しました"
+
+    if $dash_updated; then
+        echo "  ダッシュボードを更新しました"
+    fi
+}
+
+cmd_list() {
+    local sessions
+    sessions=$(_list_ws)
+    if [ -z "$sessions" ]; then
+        echo "アクティブなワークスペースはありません"
+        return
+    fi
+    echo "ワークスペース:"
+    while read -r name; do
+        local sess="$(_session_name "$name")"
+        local dir
+        dir=$(tmux display-message -t "=$sess" -p '#{pane_current_path}' 2>/dev/null)
+        echo "  $name  ($dir)"
+    done <<< "$sessions"
+}
+
+cmd_dash() {
+    _rebuild_dash || return
+    exec tmux -L ws-dash attach -t dash
+}
+
+cmd_help() {
+    cat << 'EOF'
+ws - Workspace Manager
+
+コマンド:
+  ws add [name]   tmuxセッションを作成してattach（名前省略=ディレクトリ名）
+  ws rm [name]    セッションを終了（名前省略=ディレクトリ名）
+  ws list         一覧表示
+  ws dash         ミラーダッシュボードを開く
+  ws help         このヘルプ
+
+使い方:
+  # 各IDEのターミナルで
+  cd ~/projects/api && ws add       # → セッション "ws-api" が作られてattach
+  cd ~/projects/web && ws add       # → セッション "ws-web"
+
+  # 別モニター / 別ターミナルで
+  ws dash                           # → 全セッションがタイル表示でミラー
+
+  # IDE側のターミナルはそのまま普段通り使う
+  # ダッシュボード側にも同じ内容がリアルタイムで映る
+
+ダッシュボード操作:
+  Ctrl+B → 矢印   ペイン間移動（入力もできる）
+  Ctrl+B → D       ダッシュボードから抜ける
+
+セッション増減時:
+  ws add / ws rm 後、ダッシュボードは自動更新
+  手動更新は別ターミナルで ws dash を再実行
+EOF
+}
+
+case "${1:-help}" in
+    add)  shift; cmd_add "$@" ;;
+    rm)   shift; cmd_rm "$@" ;;
+    list) cmd_list ;;
+    dash) cmd_dash ;;
+    help|--help|-h) cmd_help ;;
+    *)    echo "不明なコマンド: $1"; cmd_help; exit 1 ;;
+esac
