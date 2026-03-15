@@ -5,13 +5,14 @@
 # 別モニターで ws dash → 全セッションをミラーして一覧表示
 #
 # コマンド:
-#   ws add [name]   - カレントディレクトリ名でtmuxセッションを作成しattach（名前指定も可）
-#   ws rm [name]    - セッションを終了（名前省略=ディレクトリ名）
-#   ws list         - 一覧表示
-#   ws dash         - ダッシュボードを開く/更新
-#   ws help         - ヘルプ
+#   ws add [-g group] [name]         - tmuxセッションを作成しattach（-gでグループ付与）
+#   ws rm [name]                     - セッションを終了（名前省略=ディレクトリ名）
+#   ws list [-g group] [-G group]    - 一覧表示（-g: 絞り込み、-G: 除外）
+#   ws dash [-g group] [-G group]    - ダッシュボードを開く（-g: 絞り込み、-G: 除外）
+#   ws help                          - ヘルプ
 
 WS_PREFIX="ws-"
+WS_GROUP_FILE="$HOME/.config/ws/groups"
 
 _session_name() {
     local name="${1//\./_}"
@@ -21,6 +22,55 @@ _session_name() {
 
 _list_ws() {
     tmux list-sessions -F '#S' 2>/dev/null | grep "^${WS_PREFIX}" | sed "s/^${WS_PREFIX}//"
+}
+
+_ensure_group_file() {
+    [ -f "$WS_GROUP_FILE" ] || { mkdir -p "$(dirname "$WS_GROUP_FILE")"; touch "$WS_GROUP_FILE"; }
+}
+
+_set_group() {
+    local name="$1" group="$2"
+    _ensure_group_file
+    _remove_group "$name"
+    printf '%s\t%s\n' "$name" "$group" >> "$WS_GROUP_FILE"
+}
+
+_get_group() {
+    [ -f "$WS_GROUP_FILE" ] || return
+    awk -F'\t' -v n="$1" '$1==n{print $2; exit}' "$WS_GROUP_FILE"
+}
+
+_remove_group() {
+    [ -f "$WS_GROUP_FILE" ] || return
+    local tmp_file
+    tmp_file=$(mktemp)
+    awk -F'\t' -v n="$1" '$1!=n' "$WS_GROUP_FILE" > "$tmp_file"
+    mv "$tmp_file" "$WS_GROUP_FILE"
+}
+
+_list_ws_filtered() {
+    local include="$1" exclude="$2"
+    local sessions
+    sessions=$(_list_ws)
+    [ -z "$sessions" ] && return
+
+    declare -A groups
+    if [ -f "$WS_GROUP_FILE" ]; then
+        while IFS=$'\t' read -r name group; do
+            groups["$name"]="$group"
+        done < "$WS_GROUP_FILE"
+    fi
+
+    while read -r name; do
+        local grp="${groups[$name]}"
+        if [ -n "$include" ] && [ "$grp" != "$include" ]; then
+            continue
+        fi
+        if [ -n "$exclude" ] && [ "$grp" = "$exclude" ]; then
+            continue
+        fi
+        echo "$name"
+    done <<< "$sessions"
 }
 
 _build_panes() {
@@ -64,8 +114,9 @@ _build_panes() {
 }
 
 _rebuild_dash() {
+    local include="$1" exclude="$2"
     local sessions
-    sessions=$(_list_ws)
+    sessions=$(_list_ws_filtered "$include" "$exclude")
     local count=0
     [ -n "$sessions" ] && count=$(echo "$sessions" | wc -l)
 
@@ -93,10 +144,27 @@ _rebuild_dash() {
 }
 
 cmd_add() {
+    local group=""
+    local OPTIND=1
+    while getopts "g:" opt; do
+        case "$opt" in
+            g) group="$OPTARG" ;;
+            *) cmd_help; return 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
     local name="${1:-$(basename "$PWD")}"
     local sess="$(_session_name "$name")"
 
+    if [ -n "$group" ]; then
+        _set_group "$name" "$group"
+    fi
+
     if tmux has-session -t "=$sess" 2>/dev/null; then
+        if [ -n "$group" ]; then
+            echo "✓ '$name' のグループを '$group' に設定しました"
+        fi
         echo "⚠ '$name' は既に存在します。attachします"
         exec tmux attach -t "=$sess"
     fi
@@ -150,6 +218,7 @@ cmd_rm() {
     fi
 
     tmux kill-session -t "=$sess"
+    _remove_group "$name"
     echo "✓ '$name' を終了しました"
 
     if $dash_updated; then
@@ -158,23 +227,57 @@ cmd_rm() {
 }
 
 cmd_list() {
+    local include="" exclude=""
+    local OPTIND=1
+    while getopts "g:G:" opt; do
+        case "$opt" in
+            g) include="$OPTARG" ;;
+            G) exclude="$OPTARG" ;;
+            *) cmd_help; return 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
     local sessions
-    sessions=$(_list_ws)
+    sessions=$(_list_ws_filtered "$include" "$exclude")
     if [ -z "$sessions" ]; then
         echo "アクティブなワークスペースはありません"
         return
     fi
     echo "ワークスペース:"
+    declare -A groups
+    if [ -f "$WS_GROUP_FILE" ]; then
+        while IFS=$'\t' read -r gname ggroup; do
+            groups["$gname"]="$ggroup"
+        done < "$WS_GROUP_FILE"
+    fi
+
     while read -r name; do
         local sess="$(_session_name "$name")"
         local dir
         dir=$(tmux display-message -t "=$sess" -p '#{pane_current_path}' 2>/dev/null)
-        echo "  $name  ($dir)"
+        local grp="${groups[$name]}"
+        if [ -n "$grp" ]; then
+            echo "  $name  [$grp]  ($dir)"
+        else
+            echo "  $name  ($dir)"
+        fi
     done <<< "$sessions"
 }
 
 cmd_dash() {
-    _rebuild_dash || return
+    local include="" exclude=""
+    local OPTIND=1
+    while getopts "g:G:" opt; do
+        case "$opt" in
+            g) include="$OPTARG" ;;
+            G) exclude="$OPTARG" ;;
+            *) cmd_help; return 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    _rebuild_dash "$include" "$exclude" || return
     exec tmux -L ws-dash attach -t dash
 }
 
@@ -183,22 +286,32 @@ cmd_help() {
 ws - Workspace Manager
 
 コマンド:
-  ws add [name]   tmuxセッションを作成してattach（名前省略=ディレクトリ名）
-  ws rm [name]    セッションを終了（名前省略=ディレクトリ名）
-  ws list         一覧表示
-  ws dash         ミラーダッシュボードを開く
-  ws help         このヘルプ
+  ws add [-g group] [name]   tmuxセッションを作成してattach（名前省略=ディレクトリ名）
+  ws rm [name]               セッションを終了（名前省略=ディレクトリ名）
+  ws list [-g group] [-G group]  一覧表示
+  ws dash [-g group] [-G group]  ミラーダッシュボードを開く
+  ws help                    このヘルプ
+
+グループオプション:
+  -g group   グループ名を指定（addでは付与、list/dashでは絞り込み）
+  -G group   指定グループを除外（list/dashで使用）
 
 使い方:
   # 各IDEのターミナルで
-  cd ~/projects/api && ws add       # → セッション "ws-api" が作られてattach
-  cd ~/projects/web && ws add       # → セッション "ws-web"
+  cd ~/projects/api && ws add -g backend    # → "ws-api" をbackendグループで作成
+  cd ~/projects/web && ws add -g frontend   # → "ws-web" をfrontendグループで作成
+  cd ~/projects/db && ws add                # → "ws-db" をグループなしで作成
+
+  # グループで絞り込み
+  ws list -g backend              # → backendグループのみ表示
+  ws list -G frontend             # → frontendグループを除外して表示
+  ws dash -g backend              # → backendグループのみダッシュボード表示
 
   # 別モニター / 別ターミナルで
   ws dash                           # → 全セッションがタイル表示でミラー
 
-  # IDE側のターミナルはそのまま普段通り使う
-  # ダッシュボード側にも同じ内容がリアルタイムで映る
+  # 既存セッションにグループを後付け
+  ws add -g backend api             # → 既存の"api"にbackendグループを設定
 
 ダッシュボード操作:
   Ctrl+B → 矢印   ペイン間移動（入力もできる）
@@ -213,8 +326,8 @@ EOF
 case "${1:-help}" in
     add)  shift; cmd_add "$@" ;;
     rm)   shift; cmd_rm "$@" ;;
-    list) cmd_list ;;
-    dash) cmd_dash ;;
+    list) shift; cmd_list "$@" ;;
+    dash) shift; cmd_dash "$@" ;;
     help|--help|-h) cmd_help ;;
     *)    echo "不明なコマンド: $1"; cmd_help; exit 1 ;;
 esac
