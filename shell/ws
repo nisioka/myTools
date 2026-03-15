@@ -42,9 +42,10 @@ _get_group() {
 
 _remove_group() {
     [ -f "$WS_GROUP_FILE" ] || return
-    local tmp
-    tmp=$(awk -F'\t' -v n="$1" '$1!=n' "$WS_GROUP_FILE")
-    printf '%s\n' "$tmp" > "$WS_GROUP_FILE"
+    local tmp_file
+    tmp_file=$(mktemp)
+    awk -F'\t' -v n="$1" '$1!=n' "$WS_GROUP_FILE" > "$tmp_file"
+    mv "$tmp_file" "$WS_GROUP_FILE"
 }
 
 _list_ws_filtered() {
@@ -53,9 +54,15 @@ _list_ws_filtered() {
     sessions=$(_list_ws)
     [ -z "$sessions" ] && return
 
+    declare -A groups
+    if [ -f "$WS_GROUP_FILE" ]; then
+        while IFS=$'\t' read -r name group; do
+            groups["$name"]="$group"
+        done < "$WS_GROUP_FILE"
+    fi
+
     while read -r name; do
-        local grp
-        grp=$(_get_group "$name")
+        local grp="${groups[$name]}"
         if [ -n "$include" ] && [ "$grp" != "$include" ]; then
             continue
         fi
@@ -150,9 +157,12 @@ cmd_add() {
     local name="${1:-$(basename "$PWD")}"
     local sess="$(_session_name "$name")"
 
+    if [ -n "$group" ]; then
+        _set_group "$name" "$group"
+    fi
+
     if tmux has-session -t "=$sess" 2>/dev/null; then
         if [ -n "$group" ]; then
-            _set_group "$name" "$group"
             echo "✓ '$name' のグループを '$group' に設定しました"
         fi
         echo "⚠ '$name' は既に存在します。attachします"
@@ -160,10 +170,6 @@ cmd_add() {
     fi
 
     tmux new-session -d -s "$sess"
-
-    if [ -n "$group" ]; then
-        _set_group "$name" "$group"
-    fi
 
     if tmux -L ws-dash has-session -t dash 2>/dev/null; then
         _rebuild_dash
@@ -239,11 +245,18 @@ cmd_list() {
         return
     fi
     echo "ワークスペース:"
+    declare -A groups
+    if [ -f "$WS_GROUP_FILE" ]; then
+        while IFS=$'\t' read -r gname ggroup; do
+            groups["$gname"]="$ggroup"
+        done < "$WS_GROUP_FILE"
+    fi
+
     while read -r name; do
         local sess="$(_session_name "$name")"
-        local dir grp
+        local dir
         dir=$(tmux display-message -t "=$sess" -p '#{pane_current_path}' 2>/dev/null)
-        grp=$(_get_group "$name")
+        local grp="${groups[$name]}"
         if [ -n "$grp" ]; then
             echo "  $name  [$grp]  ($dir)"
         else
