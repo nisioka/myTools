@@ -98,6 +98,7 @@ _build_panes() {
     #     "can't find pane" になるため、必ずペインIDを渡す。
     local anchor="" first=true
     while read -r name; do
+        [ -z "$name" ] && continue
         local sess="$(_session_name "$name")"
         local pid
         if $first; then
@@ -119,7 +120,8 @@ _build_panes() {
         [ -n "$pid" ] && tmux -L ws-dash select-pane -t "$pid" -T "$name"
     done <<< "$sessions"
 
-    [ -z "$anchor" ] && return
+    # 1ペインも構築できなかった場合は失敗を呼び出し元へ通知する
+    [ -z "$anchor" ] && return 1
 
     # ペイン数に応じてレイアウト選択（横並び優先）
     local pane_count
@@ -155,12 +157,15 @@ _rebuild_dash() {
         local old_windows
         old_windows=$(tmux -L ws-dash list-windows -t "=$dash_name" -F '#{window_id}')
 
-        _build_panes window "$dash_name" "$sessions"
-
-        # 古いウィンドウを削除（クライアントは新ウィンドウに自動切替済み）
-        for wid in $old_windows; do
-            tmux -L ws-dash kill-window -t "$wid" 2>/dev/null
-        done
+        # 新ウィンドウの構築に成功したときのみ古いウィンドウを削除する。
+        # （構築失敗時に旧ウィンドウを消すと、表示中のダッシュボードごと
+        #   消滅してしまうため）
+        if _build_panes window "$dash_name" "$sessions"; then
+            # クライアントは新ウィンドウに自動切替済み
+            for wid in $old_windows; do
+                tmux -L ws-dash kill-window -t "$wid" 2>/dev/null
+            done
+        fi
     else
         # ダッシュボードが無い場合: 新規作成
         _build_panes new "$dash_name" "$sessions"
@@ -183,6 +188,10 @@ _rebuild_all_dashes() {
         local inc exc
         inc=$(tmux -L ws-dash show-options -t "$d" -qv @ws-include 2>/dev/null)
         exc=$(tmux -L ws-dash show-options -t "$d" -qv @ws-exclude 2>/dev/null)
+        # 保存フィルタから算出した名前が自分自身と一致するダッシュのみ再構築する。
+        # ws dash 以外で作られた無関係なセッションに対して、意図しない
+        # デフォルト dash セッションを新規作成してしまうのを防ぐ。
+        [ "$(_dash_name "$inc" "$exc")" = "$d" ] || continue
         _rebuild_dash "$inc" "$exc" >/dev/null
     done <<< "$dashes"
 }
