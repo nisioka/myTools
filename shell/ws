@@ -48,6 +48,17 @@ _remove_group() {
     mv "$tmp_file" "$WS_GROUP_FILE"
 }
 
+# フィルタ条件ごとに一意なダッシュボードセッション名を生成する。
+# これにより -g / -G の組み合わせが異なれば独立したダッシュボードになる。
+_dash_name() {
+    local include="$1" exclude="$2"
+    local key="dash"
+    [ -n "$include" ] && key="${key}__g_${include}"
+    [ -n "$exclude" ] && key="${key}__x_${exclude}"
+    key="${key//[.: ]/_}"
+    echo "$key"
+}
+
 _list_ws_filtered() {
     local include="$1" exclude="$2"
     local sessions
@@ -75,63 +86,76 @@ _list_ws_filtered() {
 
 _build_panes() {
     # 新しいウィンドウにペインを構築する共通処理
-    # 引数: "new" (新規セッション作成) または "window" (既存セッションに新ウィンドウ追加)
+    # 引数: mode dash_name sessions
+    #   mode: "new" (新規セッション作成) または "window" (既存セッションに新ウィンドウ追加)
     local mode="$1"
-    shift
-    local sessions="$1"
+    local dash_name="$2"
+    local sessions="$3"
 
-    local first=true
+    # 最初のペインIDを anchor として保持し、以降の分割・レイアウトは
+    # 必ずペインID（曖昧さのない target-pane）を基準に行う。
+    # 注: split-window の -t はペイン対象で、"=session" 形式では解決できず
+    #     "can't find pane" になるため、必ずペインIDを渡す。
+    local anchor="" first=true
     while read -r name; do
         local sess="$(_session_name "$name")"
+        local pid
         if $first; then
             if [ "$mode" = "new" ]; then
-                tmux -L ws-dash new-session -d -s dash \
-                    "unset TMUX; tmux attach -t '=$sess'"
+                pid=$(tmux -L ws-dash new-session -d -P -F '#{pane_id}' -s "$dash_name" \
+                    "unset TMUX; tmux attach -t '=$sess'")
             else
-                tmux -L ws-dash new-window -t dash \
-                    "unset TMUX; tmux attach -t '=$sess'"
+                pid=$(tmux -L ws-dash new-window -t "=$dash_name" -P -F '#{pane_id}' \
+                    "unset TMUX; tmux attach -t '=$sess'")
             fi
-            tmux -L ws-dash select-pane -T "$name"
+            anchor="$pid"
             first=false
         else
-            tmux -L ws-dash split-window -t dash \
-                "unset TMUX; tmux attach -t '=$sess'"
-            tmux -L ws-dash select-pane -T "$name"
-            tmux -L ws-dash select-layout -t dash tiled
+            pid=$(tmux -L ws-dash split-window -t "$anchor" -P -F '#{pane_id}' \
+                "unset TMUX; tmux attach -t '=$sess'")
+            tmux -L ws-dash select-layout -t "$anchor" tiled
         fi
+        # ペインID指定でタイトルを設定（"現在のペイン"に依存せず確実に）
+        [ -n "$pid" ] && tmux -L ws-dash select-pane -t "$pid" -T "$name"
     done <<< "$sessions"
+
+    [ -z "$anchor" ] && return
 
     # ペイン数に応じてレイアウト選択（横並び優先）
     local pane_count
-    pane_count=$(tmux -L ws-dash list-panes -t dash 2>/dev/null | wc -l)
+    pane_count=$(tmux -L ws-dash list-panes -t "$anchor" 2>/dev/null | wc -l)
     if [ "$pane_count" -le 3 ]; then
-        tmux -L ws-dash select-layout -t dash even-horizontal
+        tmux -L ws-dash select-layout -t "$anchor" even-horizontal
     else
-        tmux -L ws-dash select-layout -t dash tiled
+        tmux -L ws-dash select-layout -t "$anchor" tiled
     fi
-    tmux -L ws-dash set-option -t dash pane-border-status top 2>/dev/null
-    tmux -L ws-dash set-option -t dash pane-border-format ' #T ' 2>/dev/null
+    # 注: set-option / show-options は '=' 完全一致プレフィクスを受け付けないため
+    #     セッション名はそのまま渡す（完全一致のセッションが存在すれば優先される）
+    tmux -L ws-dash set-option -t "$dash_name" pane-border-status top 2>/dev/null
+    tmux -L ws-dash set-option -t "$dash_name" pane-border-format ' #T ' 2>/dev/null
 }
 
 _rebuild_dash() {
     local include="$1" exclude="$2"
+    local dash_name
+    dash_name=$(_dash_name "$include" "$exclude")
     local sessions
     sessions=$(_list_ws_filtered "$include" "$exclude")
     local count=0
     [ -n "$sessions" ] && count=$(echo "$sessions" | wc -l)
 
     if [ "$count" -eq 0 ]; then
-        tmux -L ws-dash kill-session -t dash 2>/dev/null
+        tmux -L ws-dash kill-session -t "=$dash_name" 2>/dev/null
         echo "ワークスペースがありません"
         return 1
     fi
 
-    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
+    if tmux -L ws-dash has-session -t "=$dash_name" 2>/dev/null; then
         # ダッシュボードが開いている場合: 新ウィンドウを作って古いのを消す
         local old_windows
-        old_windows=$(tmux -L ws-dash list-windows -t dash -F '#{window_id}')
+        old_windows=$(tmux -L ws-dash list-windows -t "=$dash_name" -F '#{window_id}')
 
-        _build_panes window "$sessions"
+        _build_panes window "$dash_name" "$sessions"
 
         # 古いウィンドウを削除（クライアントは新ウィンドウに自動切替済み）
         for wid in $old_windows; do
@@ -139,8 +163,28 @@ _rebuild_dash() {
         done
     else
         # ダッシュボードが無い場合: 新規作成
-        _build_panes new "$sessions"
+        _build_panes new "$dash_name" "$sessions"
     fi
+
+    # このダッシュボードのフィルタ条件をセッションに保存する。
+    # add / rm による自動更新時に、各ダッシュボードのフィルタを復元するため。
+    # （set-option は '=' プレフィクス不可なので名前をそのまま渡す）
+    tmux -L ws-dash set-option -t "$dash_name" @ws-include "$include" 2>/dev/null
+    tmux -L ws-dash set-option -t "$dash_name" @ws-exclude "$exclude" 2>/dev/null
+}
+
+# 現在開いている全ダッシュボードを、それぞれ保存済みのフィルタ条件で再構築する。
+_rebuild_all_dashes() {
+    local dashes
+    dashes=$(tmux -L ws-dash list-sessions -F '#S' 2>/dev/null)
+    [ -z "$dashes" ] && return
+    while read -r d; do
+        [ -z "$d" ] && continue
+        local inc exc
+        inc=$(tmux -L ws-dash show-options -t "$d" -qv @ws-include 2>/dev/null)
+        exc=$(tmux -L ws-dash show-options -t "$d" -qv @ws-exclude 2>/dev/null)
+        _rebuild_dash "$inc" "$exc" >/dev/null
+    done <<< "$dashes"
 }
 
 cmd_add() {
@@ -171,8 +215,8 @@ cmd_add() {
 
     tmux new-session -d -s "$sess"
 
-    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
-        _rebuild_dash
+    if [ -n "$(tmux -L ws-dash list-sessions -F '#S' 2>/dev/null)" ]; then
+        _rebuild_all_dashes
         echo "ダッシュボードを更新しました"
     fi
 
@@ -188,40 +232,18 @@ cmd_rm() {
         return 1
     fi
 
-    local dash_updated=false
-
-    # dashが存在する場合、対応するペインを先に削除してレイアウト再適用
-    if tmux -L ws-dash has-session -t dash 2>/dev/null; then
-        local pane_id
-        pane_id=$(tmux -L ws-dash list-panes -t dash -F '#{pane_id} #{pane_title}' 2>/dev/null \
-            | while read -r id title; do
-                if [ "$title" = "$name" ]; then
-                    echo "$id"
-                    break
-                fi
-            done)
-        if [ -n "$pane_id" ]; then
-            tmux -L ws-dash kill-pane -t "$pane_id" 2>/dev/null
-        fi
-
-        # dashセッションがまだ存在するならペイン数に応じてレイアウト再適用
-        if tmux -L ws-dash has-session -t dash 2>/dev/null; then
-            local pane_count
-            pane_count=$(tmux -L ws-dash list-panes -t dash 2>/dev/null | wc -l)
-            if [ "$pane_count" -le 3 ]; then
-                tmux -L ws-dash select-layout -t dash even-horizontal
-            else
-                tmux -L ws-dash select-layout -t dash tiled
-            fi
-            dash_updated=true
-        fi
-    fi
+    local has_dash=false
+    [ -n "$(tmux -L ws-dash list-sessions -F '#S' 2>/dev/null)" ] && has_dash=true
 
     tmux kill-session -t "=$sess"
     _remove_group "$name"
     echo "✓ '$name' を終了しました"
 
-    if $dash_updated; then
+    # セッションを消してから各ダッシュボードを再構築する。
+    # フィルタで対象外になったダッシュボードは自動的に該当ペインが消え、
+    # 空になったダッシュボードはセッションごと閉じられる。
+    if $has_dash; then
+        _rebuild_all_dashes
         echo "  ダッシュボードを更新しました"
     fi
 }
@@ -278,7 +300,9 @@ cmd_dash() {
     shift $((OPTIND - 1))
 
     _rebuild_dash "$include" "$exclude" || return
-    exec tmux -L ws-dash attach -t dash
+    local dash_name
+    dash_name=$(_dash_name "$include" "$exclude")
+    exec tmux -L ws-dash attach -t "=$dash_name"
 }
 
 cmd_help() {
@@ -309,6 +333,12 @@ ws - Workspace Manager
 
   # 別モニター / 別ターミナルで
   ws dash                           # → 全セッションがタイル表示でミラー
+
+  # フィルタごとに独立したダッシュボード（別ウィンドウで併用可能）
+  ws dash -g backend                # → backend専用ダッシュボード
+  ws dash -g frontend               # → frontend専用ダッシュボード（上とは別セッション）
+  # ↑ 2つは別ウィンドウで同時に開いたままにできる。
+  #    ws add / ws rm 後もそれぞれのフィルタを維持して自動更新される。
 
   # 既存セッションにグループを後付け
   ws add -g backend api             # → 既存の"api"にbackendグループを設定
