@@ -60,7 +60,9 @@ _dash_name() {
 }
 
 _list_ws_filtered() {
-    local include="$1" exclude="$2"
+    # 引数: include exclude [skip]
+    #   skip: 一覧から除外する名前（rm で削除予定のセッションを先回りで除く用）
+    local include="$1" exclude="$2" skip="$3"
     local sessions
     sessions=$(_list_ws)
     [ -z "$sessions" ] && return
@@ -72,8 +74,13 @@ _list_ws_filtered() {
         done < "$WS_GROUP_FILE"
     fi
 
+    # name は呼び出し元(cmd_rm など)の同名変数を壊さないよう必ず local にする
+    local name
     while read -r name; do
         local grp="${groups[$name]}"
+        if [ -n "$skip" ] && [ "$name" = "$skip" ]; then
+            continue
+        fi
         if [ -n "$include" ] && [ "$grp" != "$include" ]; then
             continue
         fi
@@ -97,7 +104,8 @@ _build_panes() {
     # 必ずペインID（曖昧さのない target-pane）を基準に行う。
     # 注: split-window の -t はペイン対象で、"=session" 形式では解決できず
     #     "can't find pane" になるため、必ずペインIDを渡す。
-    local anchor="" first=true
+    # name は呼び出し元の同名変数を壊さないよう必ず local にする
+    local anchor="" first=true name
     while read -r name; do
         [ -z "$name" ] && continue
         local sess="$(_session_name "$name")"
@@ -134,16 +142,24 @@ _build_panes() {
     fi
     # 注: set-option / show-options は '=' 完全一致プレフィクスを受け付けないため
     #     セッション名はそのまま渡す（完全一致のセッションが存在すれば優先される）
+    # 注: これらの set-option の終了コードを関数の戻り値にしてはいけない。
+    #     ペイン枠装飾は付加的な処理で、失敗しても構築自体は成功しているため。
+    #     ここで暗黙に非ゼロを返すと、呼び出し元(_rebuild_dash)が構築失敗と
+    #     誤判定し、旧ウィンドウを消さずレイアウト再計算が行われなくなる。
     tmux -L ws-dash set-option -t "$dash_name" pane-border-status top 2>/dev/null
     tmux -L ws-dash set-option -t "$dash_name" pane-border-format ' #T ' 2>/dev/null
+
+    # 1ペイン以上構築できていれば成功として明示的に 0 を返す
+    return 0
 }
 
 _rebuild_dash() {
-    local include="$1" exclude="$2"
+    # 引数: include exclude [skip]（skip は _list_ws_filtered に渡す）
+    local include="$1" exclude="$2" skip="$3"
     local dash_name
     dash_name=$(_dash_name "$include" "$exclude")
     local sessions
-    sessions=$(_list_ws_filtered "$include" "$exclude")
+    sessions=$(_list_ws_filtered "$include" "$exclude" "$skip")
     local count=0
     # echo だとハイフン始まりの名前がオプション扱いされ空出力→count=0 で
     # 誤ってダッシュを kill しかねないため printf を使う
@@ -167,6 +183,7 @@ _rebuild_dash() {
             return 1
         fi
         # クライアントは新ウィンドウに自動切替済み
+        local wid
         for wid in $old_windows; do
             tmux -L ws-dash kill-window -t "$wid" 2>/dev/null
         done
@@ -183,10 +200,13 @@ _rebuild_dash() {
 }
 
 # 現在開いている全ダッシュボードを、それぞれ保存済みのフィルタ条件で再構築する。
+# 引数: [skip] - 再構築時に一覧から除外する名前（rm で削除予定のセッション）
 _rebuild_all_dashes() {
+    local skip="$1"
     local dashes
     dashes=$(tmux -L ws-dash list-sessions -F '#S' 2>/dev/null)
     [ -z "$dashes" ] && return
+    local d
     while read -r d; do
         [ -z "$d" ] && continue
         local inc exc
@@ -196,7 +216,7 @@ _rebuild_all_dashes() {
         # ws dash 以外で作られた無関係なセッションに対して、意図しない
         # デフォルト dash セッションを新規作成してしまうのを防ぐ。
         [ "$(_dash_name "$inc" "$exc")" = "$d" ] || continue
-        _rebuild_dash "$inc" "$exc" >/dev/null
+        _rebuild_dash "$inc" "$exc" "$skip" >/dev/null
     done <<< "$dashes"
 }
 
@@ -248,17 +268,25 @@ cmd_rm() {
     local has_dash=false
     [ -n "$(tmux -L ws-dash list-sessions -F '#S' 2>/dev/null)" ] && has_dash=true
 
-    tmux kill-session -t "=$sess"
+    # 重要: ダッシュボードの再構築は kill-session より「先」に行う。
+    #   ws rm は通常、削除対象セッションに attach しているターミナルから実行される。
+    #   先に kill-session するとこのスクリプト自身が載っているペインごと落ち、
+    #   後続の再構築が実行されずレイアウトが調整されないまま残ってしまう。
+    # 削除予定の名前を skip として渡し、削除後の状態でレイアウトを組み直す。
     _remove_group "$name"
-    echo "✓ '$name' を終了しました"
-
-    # セッションを消してから各ダッシュボードを再構築する。
-    # フィルタで対象外になったダッシュボードは自動的に該当ペインが消え、
-    # 空になったダッシュボードはセッションごと閉じられる。
     if $has_dash; then
-        _rebuild_all_dashes
+        _rebuild_all_dashes "$name"
+    fi
+
+    # メッセージも kill-session より先に出す。
+    # 自分自身のセッションを消す場合、kill-session 後はこのプロセスごと
+    # 消えるため、後ろに書いた echo は出力されないことがある。
+    echo "✓ '$name' を終了しました"
+    if $has_dash; then
         echo "  ダッシュボードを更新しました"
     fi
+
+    tmux kill-session -t "=$sess"
 }
 
 cmd_list() {
@@ -287,6 +315,7 @@ cmd_list() {
         done < "$WS_GROUP_FILE"
     fi
 
+    local name
     while read -r name; do
         local sess="$(_session_name "$name")"
         local dir
