@@ -80,3 +80,12 @@ ws rm api
 |------|------|
 | `Ctrl+B` → 矢印 | ペイン間移動（入力も可能） |
 | `Ctrl+B` → `D` | ダッシュボードから抜ける |
+
+## jev - TypeSafe AI (Jev) お試し環境
+
+TypeSafe AI の System One モデル Jev をローカルで叩くサンドボックス。詳細は [jev/README.md](jev/README.md)。
+
+```bash
+cd jev && pnpm install && cp .env.example .env   # .env に TYPESAFE_API_KEY を書く
+pnpm demo
+```

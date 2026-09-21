@@ -1,0 +1,22 @@
+{
+  "name": "jev-playground",
+  "private": true,
+  "type": "module",
+  "description": "TypeSafe AI の System One モデル Jev をローカルで試すためのサンドボックス",
+  "scripts": {
+    "demo": "node --env-file-if-exists=.env src/demo.ts",
+    "ask": "node --env-file-if-exists=.env src/ask.ts",
+    "models": "node --env-file-if-exists=.env src/models.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.0"
+  }
+}
