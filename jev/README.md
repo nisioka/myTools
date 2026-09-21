@@ -13,7 +13,8 @@ cp .env.example .env
 # .env の TYPESAFE_API_KEY に https://console.typesafe.ai/keys のキーを書く
 ```
 
-Node 22.6 以降の TypeScript 直接実行（type stripping）を使っているので、tsx などのビルド系依存は無い。
+Node 22.18 以降の TypeScript 直接実行（type stripping）を使っているので、tsx などのビルド系依存は無い。
+型剥がしが既定で有効になるのが 22.18、`--env-file-if-exists` が入ったのが 22.9 で、両方を満たす下限が 22.18。
 
 ## 使い方
 
