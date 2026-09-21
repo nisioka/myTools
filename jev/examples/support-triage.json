@@ -1,0 +1,24 @@
+{
+  "is_urgent": {
+    "type": "noul",
+    "instructions": "この問い合わせは時間的な緊急性を含んでいる"
+  },
+  "department": {
+    "type": "choice",
+    "instructions": "どの部署が対応すべきか",
+    "criteria": {
+      "service": "整備・修理・不具合の対応",
+      "sales": "見積り・購入・契約に関する相談",
+      "parts": "部品やアクセサリの手配"
+    }
+  },
+  "frustration": {
+    "type": "score",
+    "instructions": "顧客の不満の強さ",
+    "criteria": [
+      "落ち着いて事実を述べている",
+      "苛立っているが丁寧",
+      "強い言葉で怒っている"
+    ]
+  }
+}

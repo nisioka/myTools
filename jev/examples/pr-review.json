@@ -1,0 +1,29 @@
+{
+  "needs_human_review": {
+    "type": "noul",
+    "instructions": "この変更は人間のレビューを必須にすべきだ",
+    "criteria": {
+      "true": "設計・セキュリティ・データ整合性に影響しうる",
+      "false": "定型的で機械的に検証できる"
+    }
+  },
+  "change_kind": {
+    "type": "choice",
+    "instructions": "変更の種類",
+    "criteria": {
+      "feature": "機能追加",
+      "fix": "不具合修正",
+      "refactor": "振る舞いを変えない整理",
+      "chore": "依存更新や設定変更"
+    }
+  },
+  "risk": {
+    "type": "score",
+    "instructions": "本番に出したときの危険度",
+    "criteria": [
+      "影響範囲が閉じていて即ロールバックできる",
+      "限定的だが利用者に見える変化がある",
+      "データや課金に不可逆な影響が出うる"
+    ]
+  }
+}
