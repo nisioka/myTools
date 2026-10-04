@@ -81,6 +81,33 @@ ws rm api
 | `Ctrl+B` → 矢印 | ペイン間移動（入力も可能） |
 | `Ctrl+B` → `D` | ダッシュボードから抜ける |
 
+## claude-discord - Claude Code の Discord 常駐セッション
+
+Claude Code を Discord チャンネル付きで tmux セッション `claude-discord` に常駐させ、落ちていたら systemd user timer が起こし直す。メインPC（WSL2）で動かしている。
+
+- `claude-discord/start.sh` — セッションの起動・生存確認（手で叩いても安全）
+- `claude-discord/claude-discord.service` / `.timer` — 起動時と1日1回 `start.sh` を呼ぶ
+
+### 導入方法
+
+実体はこのリポジトリに置き、稼働場所からシンボリックリンクで参照する。
+リンク先に同名のファイルが既にあると `ln -s` が失敗して古いものが残るので、先に退避しておく。
+
+```bash
+mkdir -p ~/claude-discord ~/.config/systemd/user
+ln -s "$(pwd)/claude-discord/start.sh" ~/claude-discord/start.sh
+ln -s "$(pwd)/claude-discord/claude-discord.service" ~/.config/systemd/user/
+ln -s "$(pwd)/claude-discord/claude-discord.timer" ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now claude-discord.timer
+```
+
+Discord のトークンは `~/.claude/channels/discord/.env`（リポジトリ外）。作業ディレクトリは `~/claude-discord/workspace`、ログは `~/.local/state/claude-discord/supervisor.log`。
+
+### 依存
+
+- tmux / claude / bun（discord MCP サーバのランタイム）
+
 ## jev - TypeSafe AI (Jev) お試し環境
 
 TypeSafe AI の System One モデル Jev をローカルで叩くサンドボックス。詳細は [jev/README.md](jev/README.md)。
