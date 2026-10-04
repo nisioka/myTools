@@ -91,6 +91,7 @@ Claude Code を Discord チャンネル付きで tmux セッション `claude-di
 ### 導入方法
 
 実体はこのリポジトリに置き、稼働場所からシンボリックリンクで参照する。
+リンク先に同名のファイルが既にあると `ln -s` が失敗して古いものが残るので、先に退避しておく。
 
 ```bash
 mkdir -p ~/claude-discord ~/.config/systemd/user

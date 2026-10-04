@@ -30,7 +30,7 @@ log() { printf '[%s] %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
   exit 0
 fi
 
@@ -43,7 +43,7 @@ log "セッションが無いので起動する"
 if tmux new-session -d -s "$SESSION" -c "$WORKSPACE" "claude --channels $CHANNEL"; then
   # 起動直後に死ぬ(クラッシュループ)場合はログに残す
   sleep 5
-  if tmux has-session -t "$SESSION" 2>/dev/null; then
+  if tmux has-session -t "=$SESSION" 2>/dev/null; then
     log "起動成功"
   else
     log "ERROR: 起動直後に終了した。手動で 'cd $WORKSPACE && claude --channels $CHANNEL' を実行して原因を確認のこと"
