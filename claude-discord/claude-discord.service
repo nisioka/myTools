@@ -1,0 +1,17 @@
+[Unit]
+Description=Claude Code Discord channel session (tmux: claude-discord)
+Documentation=file:///home/daisuke/claude-discord/start.sh
+
+[Service]
+Type=oneshot
+ExecStart=%h/claude-discord/start.sh
+
+# ExecStart 終了後に cgroup ごと殺さない。ここを control-group(既定) にすると
+# 起動したばかりの tmux サーバまで巻き添えで落ちる。tmux サーバはユーザの
+# 他セッション(ws-*)とも共有されるので、それらを道連れにしないための指定。
+KillMode=process
+
+# 生存確認が空振りするたびに journal へ Starting/Finished を残さない。
+# 本当に見たいのは start.sh 側のログ(~/.local/state/claude-discord/supervisor.log)
+# と、異常終了したときの warning 以上だけ。
+LogLevelMax=warning

@@ -1,0 +1,19 @@
+[Unit]
+Description=Keep the Claude Code Discord session alive
+
+[Timer]
+# 主な復帰経路は OnBootSec(マシン起動時)。OnUnitActiveSec は
+# 「起動しっぱなしのまま claude だけ死んだ」場合を拾うだけの保険なので
+# 1日1回で足りる。日中に落ちたと気づいたら ~/claude-discord/start.sh を
+# 手で叩けば即復帰する。
+OnBootSec=30s
+OnStartupSec=30s
+OnUnitActiveSec=1d
+# 精度を緩めるほど systemd が他のタイマーとウェイクアップをまとめてくれる。
+# 保険の発火なので時刻は1時間ずれても構わない。
+AccuracySec=1h
+RandomizedDelaySec=30min
+Unit=claude-discord.service
+
+[Install]
+WantedBy=timers.target
